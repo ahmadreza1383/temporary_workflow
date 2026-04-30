@@ -1,46 +1,116 @@
-name: Build Docker Image and Upload Artifact
+name: Build and Release Large File
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - Dockerfile
-      - ".github/workflows/build-docker-image.yml"
 
 jobs:
   build:
     runs-on: ubuntu-latest
 
+    permissions:
+      contents: write
+
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Show disk space before build
-        run: df -h
-
-      - name: Build Docker image
+      - name: Install tools
         run: |
-          docker build -t comfyui-rocm:latest .
+          sudo apt update
+          sudo apt install -y xz-utils coreutils pv
 
-      - name: Save Docker image as tar
+      - name: Set variables
         run: |
-          docker save comfyui-rocm:latest -o comfyui-rocm.tar
+          echo "FILE=output.file" >> $GITHUB_ENV
 
-      - name: Compress Docker image
+      - name: Check file
         run: |
-          gzip -1 comfyui-rocm.tar
+          if [ ! -f "$FILE" ]; then
+            echo "File not found: $FILE"
+            exit 1
+          fi
+          ls -lh "$FILE"
 
-      - name: Show artifact size
+      - name: Hash original file
         run: |
-          ls -lh comfyui-rocm.tar.gz
-          df -h
+          sha256sum "$FILE" > original.sha256
+          md5sum "$FILE" > original.md5
+          echo "Original file hashes:"
+          cat original.sha256
+          cat original.md5
 
-      - name: Upload Docker image artifact
-        uses: actions/upload-artifact@v4
+      - name: Compress with xz
+        run: |
+          tar -I 'xz -T0 -9' -cf build.tar.xz "$FILE"
+
+      - name: Hash compressed archive
+        run: |
+          sha256sum build.tar.xz > build.tar.xz.sha256
+          md5sum build.tar.xz > build.tar.xz.md5
+          ls -lh build.tar.xz
+
+      - name: Split archive if larger than 2GB
+        run: |
+          SIZE=$(stat -c%s build.tar.xz)
+          LIMIT=$((2 * 1024 * 1024 * 1024))
+
+          if [ "$SIZE" -gt "$LIMIT" ]; then
+            echo "Splitting archive..."
+            split -b 1900M build.tar.xz build.part.
+          else
+            echo "Archive smaller than 2GB, no split needed"
+            cp build.tar.xz build.part.00
+          fi
+
+      - name: Hash split parts
+        run: |
+          sha256sum build.part.* > parts.sha256
+          md5sum build.part.* > parts.md5
+          cat parts.sha256
+          cat parts.md5
+
+      - name: Create Release
+        id: release
+        uses: softprops/action-gh-release@v2
         with:
-          name: comfyui-rocm-docker-image
-          path: comfyui-rocm.tar.gz
-          retention-days: 7
-          compression-level: 0
+          tag_name: build-${{ github.run_id }}
+          name: Build ${{ github.run_id }}
+          body: |
+            Automated build
+
+            -----------------------
+            Original File SHA256
+            -----------------------
+            $(cat original.sha256)
+
+            -----------------------
+            Original File MD5
+            -----------------------
+            $(cat original.md5)
+
+            -----------------------
+            Compressed Archive SHA256
+            -----------------------
+            $(cat build.tar.xz.sha256)
+
+            -----------------------
+            Compressed Archive MD5
+            -----------------------
+            $(cat build.tar.xz.md5)
+
+            Hashes for split parts are included as files.
+          files: |
+            build.part.*
+            original.sha256
+            original.md5
+            build.tar.xz.sha256
+            build.tar.xz.md5
+            parts.sha256
+            parts.md5
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Print Release URL
+        run: |
+          echo "Release URL:"
+          echo "https://github.com/${{ github.repository }}/releases/tag/build-${{ github.run_id }}"
