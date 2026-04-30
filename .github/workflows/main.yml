@@ -1,0 +1,46 @@
+name: Build Docker Image and Upload Artifact
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - Dockerfile
+      - ".github/workflows/build-docker-image.yml"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Show disk space before build
+        run: df -h
+
+      - name: Build Docker image
+        run: |
+          docker build -t comfyui-rocm:latest .
+
+      - name: Save Docker image as tar
+        run: |
+          docker save comfyui-rocm:latest -o comfyui-rocm.tar
+
+      - name: Compress Docker image
+        run: |
+          gzip -1 comfyui-rocm.tar
+
+      - name: Show artifact size
+        run: |
+          ls -lh comfyui-rocm.tar.gz
+          df -h
+
+      - name: Upload Docker image artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: comfyui-rocm-docker-image
+          path: comfyui-rocm.tar.gz
+          retention-days: 7
+          compression-level: 0
