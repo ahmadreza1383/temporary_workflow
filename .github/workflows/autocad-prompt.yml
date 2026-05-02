@@ -1,0 +1,72 @@
+name: Offline Page Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-offline:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install Playwright
+        run: |
+          npm init -y
+          npm install playwright
+          npx playwright install chromium
+
+      - name: Render and save page
+        run: |
+          mkdir offline
+          node <<'EOF'
+          const { chromium } = require('playwright');
+          const fs = require('fs');
+
+          (async () => {
+            const browser = await chromium.launch();
+            const page = await browser.newPage();
+
+            await page.goto(
+              'https://openart.ai/generator/cad-drawing',
+              { waitUntil: 'networkidle' }
+            );
+
+            // ذخیره HTML رندر شده
+            const html = await page.content();
+            fs.writeFileSync('offline/index.html', html);
+
+            // گرفتن اسکرین‌شات (اختیاری ولی مفید)
+            await page.screenshot({ path: 'offline/preview.png', fullPage: true });
+
+            await browser.close();
+          })();
+          EOF
+
+      - name: Zip offline files
+        run: |
+          cd offline
+          zip -r ../offline-openart-cad-drawing.zip .
+          cd ..
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: offline-${{ github.run_number }}
+          name: Offline OpenArt CAD Drawing
+          body: |
+            Offline snapshot of:
+            https://openart.ai/generator/cad-drawing
+
+            Generated automatically via GitHub Actions.
+          files: |
+            offline-openart-cad-drawing.zip
