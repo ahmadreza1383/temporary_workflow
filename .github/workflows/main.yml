@@ -1,4 +1,4 @@
-name: Build Docker Image and Release
+name: Build ComfyUI ROCm Docker Image and Release
 
 on:
   workflow_dispatch:
@@ -17,93 +17,108 @@ jobs:
       - name: Install tools
         run: |
           sudo apt update
-          sudo apt install -y xz-utils coreutils
+          sudo apt install -y zstd coreutils
 
       # 1) Build Docker Image
       - name: Build Docker Image
         run: |
-          docker build -t myimage:latest .
+          docker build -t comfyui-rocm:latest .
+
+      # Optional but recommended: verify ROCm/HIP torch inside image
+      - name: Verify ROCm Torch inside image
+        run: |
+          docker run --rm comfyui-rocm:latest python3 - <<'PY'
+          import sys
+          import torch
+
+          print("========== TORCH CHECK ==========")
+          print("Torch version      :", torch.__version__)
+          print("Torch location     :", torch.__file__)
+          print("torch.version.hip  :", torch.version.hip)
+          print("torch.version.cuda :", torch.version.cuda)
+          print("=================================")
+
+          if torch.version.hip is None:
+              print("ERROR: torch is not ROCm/HIP build", file=sys.stderr)
+              sys.exit(1)
+
+          if torch.version.cuda is not None:
+              print("ERROR: CUDA torch detected", file=sys.stderr)
+              sys.exit(1)
+
+          print("PASS: ROCm/HIP torch confirmed.")
+          PY
 
       # 2) Save image as TAR file
-      - name: Export Image as TAR
+      - name: Export Docker Image as TAR
         run: |
-          docker save myimage:latest -o image.tar
-          ls -lh image.tar
+          docker save comfyui-rocm:latest -o comfyui-rocm.tar
+          ls -lh comfyui-rocm.tar
 
-      # 3) Original file hashes (before compression)
-      - name: Hash original image.tar
+      # 3) Original TAR hashes before compression
+      - name: Hash original comfyui-rocm.tar
         run: |
-          sha256sum image.tar > original.sha256
-          md5sum image.tar > original.md5
+          sha256sum comfyui-rocm.tar > comfyui-rocm.tar.sha256
+          md5sum comfyui-rocm.tar > comfyui-rocm.tar.md5
 
-      # 4) Compress with xz
-      - name: Compress image.tar
+      # 4) Compress TAR directly with zstd
+      # Important: this does NOT tar the tar again.
+      # It compresses comfyui-rocm.tar into comfyui-rocm.tar.zst directly.
+      - name: Compress with zstd
         run: |
-          tar -I 'xz -T0 -9' -cf image.tar.xz image.tar
-          ls -lh image.tar.xz
+          zstd -T0 -19 -f comfyui-rocm.tar -o comfyui-rocm.tar.zst
+          ls -lh comfyui-rocm.tar.zst
 
       # 5) Hash compressed file
-      - name: Hash compressed file
+      - name: Hash compressed comfyui-rocm.tar.zst
         run: |
-          sha256sum image.tar.xz > image.tar.xz.sha256
-          md5sum image.tar.xz > image.tar.xz.md5
+          sha256sum comfyui-rocm.tar.zst > comfyui-rocm.tar.zst.sha256
+          md5sum comfyui-rocm.tar.zst > comfyui-rocm.tar.zst.md5
 
-      # 6) Split file if > 2GB
-      - name: Split archive
+      # 6) Split compressed file into parts:
+      # comfyui-rocm.part01.zst
+      # comfyui-rocm.part02.zst
+      # ...
+      - name: Split compressed archive
         run: |
-          split -b 1900M image.tar.xz image.part.
+          split \
+            -b 1900M \
+            -d \
+            -a 2 \
+            --numeric-suffixes=1 \
+            --additional-suffix=.zst \
+            comfyui-rocm.tar.zst \
+            comfyui-rocm.part
+
+          ls -lh comfyui-rocm.part*.zst
 
       # 7) Hash each split part
       - name: Hash split parts
         run: |
-          sha256sum image.part.* > parts.sha256
-          md5sum image.part.* > parts.md5
+          sha256sum comfyui-rocm.part*.zst > comfyui-rocm.parts.sha256
+          md5sum comfyui-rocm.part*.zst > comfyui-rocm.parts.md5
 
-      # 8) Create Release
+      # 9) Create GitHub Release
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: docker-build-${{ github.run_id }}
-          name: Docker Build ${{ github.run_id }}
-          body: |
-            Docker image built and exported.
-
-            --------------------------------
-            Original Image Tar SHA256
-            --------------------------------
-            $(cat original.sha256)
-
-            --------------------------------
-            Original Image Tar MD5
-            --------------------------------
-            $(cat original.md5)
-
-            --------------------------------
-            Compressed File SHA256
-            --------------------------------
-            $(cat image.tar.xz.sha256)
-
-            --------------------------------
-            Compressed File MD5
-            --------------------------------
-            $(cat image.tar.xz.md5)
-
-            Split part hashes included as files.
-
+          tag_name: comfyui-rocm-${{ github.run_id }}
+          name: ComfyUI ROCm ${{ github.run_id }}
+          body_path: release-body.md
           files: |
-            image.part.*
-            original.sha256
-            original.md5
-            image.tar.xz.sha256
-            image.tar.xz.md5
-            parts.sha256
-            parts.md5
+            comfyui-rocm.part*.zst
+            comfyui-rocm.tar.sha256
+            comfyui-rocm.tar.md5
+            comfyui-rocm.tar.zst.sha256
+            comfyui-rocm.tar.zst.md5
+            comfyui-rocm.parts.sha256
+            comfyui-rocm.parts.md5
 
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
-      # 9) Print Release URL
+      # 10) Print Release URL
       - name: Print Release URL
         run: |
           echo "Release ready:"
-          echo "https://github.com/${{ github.repository }}/releases/tag/docker-build-${{ github.run_id }}"
+          echo "https://github.com/${{ github.repository }}/releases/tag/comfyui-rocm-${{ github.run_id }}"
